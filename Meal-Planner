@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Ingredient Cookbook | Meal Planner</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Load Inter Font -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f7f9fb;
+        }
+        /* Custom scrollbar for recipe content */
+        .recipe-output::-webkit-scrollbar {
+            width: 8px;
+        }
+        .recipe-output::-webkit-scrollbar-thumb {
+            background-color: #a0a0a0;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body class="min-h-screen p-4 sm:p-8 flex justify-center">
+
+    <div class="w-full max-w-4xl">
+        <header class="text-center mb-8">
+            <h1 class="text-4xl font-bold text-gray-800 mb-2">Your AI Ingredient Cookbook</h1>
+            <p class="text-gray-600">Plan meals based on what you already have at home.</p>
+        </header>
+
+        <!-- Input Area -->
+        <div class="bg-white p-6 rounded-xl shadow-lg mb-8 border border-blue-100">
+            <label for="ingredientsInput" class="block text-lg font-semibold text-gray-700 mb-3">
+                1. Enter available ingredients (separated by commas)
+            </label>
+            <textarea id="ingredientsInput"
+                      rows="3"
+                      placeholder="e.g., Chicken breast, broccoli, rice, tomatoes, garlic"
+                      class="w-full p-3 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 transition duration-150 shadow-inner"></textarea>
+
+            <div id="errorMessage" class="text-red-600 mt-2 hidden font-medium"></div>
+
+            <button id="generateButton"
+                    class="mt-4 w-full sm:w-auto px-6 py-3 bg-blue-600 text-white font-semibold rounded-lg shadow-md hover:bg-blue-700 transition duration-300 transform hover:scale-[1.01] active:scale-[0.99] disabled:bg-blue-400">
+                <span id="buttonText">Suggest Recipes</span>
+                <svg id="loadingSpinner" class="animate-spin -ml-1 mr-3 h-5 w-5 text-white hidden" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+            </button>
+        </div>
+
+        <!-- Output Area -->
+        <div id="outputSection" class="bg-white p-6 rounded-xl shadow-lg border border-green-100 min-h-[200px] hidden">
+            <h2 class="text-2xl font-bold text-gray-800 mb-4">Your Meal Suggestions</h2>
+            <div id="recipeOutput" class="recipe-output text-gray-700 leading-relaxed overflow-y-auto max-h-[60vh] pb-4">
+                <!-- Recipes will be inserted here -->
+            </div>
+            <div id="sourcesOutput" class="mt-4 pt-4 border-t border-gray-200">
+                <h3 class="text-lg font-semibold text-gray-700 mb-2">Sources</h3>
+                <ul id="sourcesList" class="list-disc list-inside text-sm text-gray-500">
+                    <!-- Sources will be inserted here -->
+                </ul>
+            </div>
+        </div>
+    </div>
+
+    <!-- Tone.js for success sound -->
+    <script src="https://unpkg.com/tone@14.9.15/build/Tone.js"></script>
+
+    <script type="module">
+        // Global variables from the Canvas environment
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        // IMPORTANT: The API key must be inserted here for the app to work publicly.
+        // It is currently empty. Replace the "" with your actual API key.
+        const apiKey = ""; 
+
+        // DOM Elements
+        const ingredientsInput = document.getElementById('ingredientsInput');
+        const generateButton = document.getElementById('generateButton');
+        const buttonText = document.getElementById('buttonText');
+        const loadingSpinner = document.getElementById('loadingSpinner');
+        const errorMessage = document.getElementById('errorMessage');
+        const outputSection = document.getElementById('outputSection');
+        const recipeOutput = document.getElementById('recipeOutput');
+        const sourcesList = document.getElementById('sourcesList');
+
+        // Initialize Tone.js Synth for success sound
+        const synth = new Tone.Synth().toDestination();
+
+        // LLM Configuration
+        const MODEL_NAME = 'gemini-2.5-flash-preview-09-2025';
+        const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_NAME}:generateContent?key=${apiKey}`;
+
+        // System Instruction for the model (Now in English)
+        const systemPrompt = {
+            parts: [{
+                text: "You are an experienced chef and nutritionist. Your task is to create creative, complete, and healthy recipes primarily using the ingredients specified by the user (or very common staples like salt, pepper, oil, water). Format your answer clearly in the English language with three separate recipes. Use Markdown for formatting. Each recipe must include a name, time required, ingredients list, and step-by-step instructions. Be concise."
+            }]
+        };
+
+        /**
+         * Executes the API request with exponential backoff.
+         * @param {object} payload - The payload for the API request.
+         * @param {number} retries - Number of retries so far.
+         * @returns {Promise<object>} The API JSON response.
+         */
+        async function fetchWithBackoff(payload, retries = 0) {
+            const MAX_RETRIES = 5;
+            try {
+                const response = await fetch(apiUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                if (!response.ok) {
+                    const errorBody = await response.json();
+                    console.error('API Error:', errorBody);
+                    // 429 Too Many Requests -> Backoff
+                    if (response.status === 429 && retries < MAX_RETRIES) {
+                        const delay = Math.pow(2, retries) * 1000 + Math.random() * 1000;
+                        console.log(`Rate limit reached, retrying in ${Math.round(delay / 1000)}s.`);
+                        await new Promise(resolve => setTimeout(resolve, delay));
+                        return fetchWithBackoff(payload, retries + 1);
+                    }
+                    throw new Error(`HTTP Error ${response.status}: ${errorBody.error?.message || response.statusText}`);
+                }
+                return await response.json();
+            } catch (error) {
+                if (retries < MAX_RETRIES) {
+                    const delay = Math.pow(2, retries) * 1000 + Math.random() * 1000;
+                    console.log(`Network error, retrying in ${Math.round(delay / 1000)}s.`);
+                    await new Promise(resolve => setTimeout(resolve, delay));
+                    return fetchWithBackoff(payload, retries + 1);
+                }
+                throw error;
+            }
+        }
+
+        /**
+         * Generates recipes based on user input.
+         */
+        async function generateRecipe() {
+            const ingredients = ingredientsInput.value.trim();
+
+            if (!ingredients) {
+                errorMessage.textContent = 'Please enter some ingredients first.';
+                errorMessage.classList.remove('hidden');
+                return;
+            }
+
+            if (!apiKey) {
+                errorMessage.textContent = 'API Key is missing. Please insert your key into the code to enable recipe generation.';
+                errorMessage.classList.remove('hidden');
+                return;
+            }
+
+            errorMessage.classList.add('hidden');
+            generateButton.disabled = true;
+            buttonText.textContent = 'Loading Recipes...';
+            loadingSpinner.classList.remove('hidden');
+            outputSection.classList.add('hidden');
+            recipeOutput.innerHTML = '';
+            sourcesList.innerHTML = '';
+
+            try {
+                // User query is now in English
+                const userQuery = `Create 3 complete recipes (Name, Time, Ingredients, Instructions) based on these ingredients: ${ingredients}`;
+
+                const payload = {
+                    contents: [{ parts: [{ text: userQuery }] }],
+                    tools: [{ "google_search": {} }], // Google Search for grounded answers
+                    systemInstruction: systemPrompt
+                };
+
+                const result = await fetchWithBackoff(payload);
+                const candidate = result.candidates?.[0];
+
+                if (!candidate || !candidate.content?.parts?.[0]?.text) {
+                    recipeOutput.innerHTML = '<p class="text-red-500">Could not find any recipes. Try again with different ingredients.</p>';
+                    return;
+                }
+
+                // 1. Extract the generated text
+                const text = candidate.content.parts[0].text;
+
+                // 2. Extract grounding sources (Sources)
+                let sources = [];
+                const groundingMetadata = candidate.groundingMetadata;
+                if (groundingMetadata && groundingMetadata.groundingAttributions) {
+                    sources = groundingMetadata.groundingAttributions
+                        .map(attribution => ({
+                            uri: attribution.web?.uri,
+                            title: attribution.web?.title,
+                        }))
+                        .filter(source => source.uri && source.title);
+                }
+
+                // 3. Display the text and sources
+
+                // Simple Markdown to HTML conversion
+                let formattedText = text;
+                formattedText = formattedText.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>'); // **Bold**
+                formattedText = formattedText.replace(/### (.*)/g, '<h3 class="text-xl font-semibold mt-4 mb-2">$1</h3>'); // Headings
+                formattedText = formattedText.replace(/## (.*)/g, '<h2 class="text-xl font-semibold mt-4 mb-2">$1</h2>'); // Headings
+                formattedText = formattedText.replace(/\n\n/g, '<br><br>'); // Double newline to line break
+                formattedText = formattedText.replace(/(\*|\-) (.*)/g, '<li>$2</li>'); // List items (simple)
+
+                // Improve lists (wrap consecutive <li> elements with <ul>)
+                if (formattedText.includes('<li>')) {
+                    const lines = formattedText.split('<br><br>');
+                    let finalHtml = '';
+                    let inList = false;
+
+                    for (const line of lines) {
+                        if (line.trim().startsWith('<li>')) {
+                            if (!inList) {
+                                finalHtml += '<ul class="list-disc list-outside ml-6">';
+                                inList = true;
+                            }
+                            finalHtml += line.trim().replace(/<br>/g, '') + '<br>'; // Remove inner line breaks
+                        } else {
+                            if (inList) {
+                                finalHtml += '</ul>';
+                                inList = false;
+                            }
+                            finalHtml += line + '<br><br>';
+                        }
+                    }
+                    if (inList) {
+                        finalHtml += '</ul>';
+                    }
+                    formattedText = finalHtml;
+                }
+                
+                recipeOutput.innerHTML = formattedText;
+                outputSection.classList.remove('hidden');
+
+                sources.forEach(source => {
+                    const li = document.createElement('li');
+                    li.innerHTML = `<a href="${source.uri}" target="_blank" rel="noopener noreferrer" class="hover:underline text-blue-600">${source.title}</a>`;
+                    sourcesList.appendChild(li);
+                });
+
+                // Play success sound
+                synth.triggerAttackRelease("C5", "8n");
+
+            } catch (error) {
+                console.error('Recipe generation error:', error);
+                errorMessage.textContent = `Error fetching recipes: ${error.message}. Please check the console.`;
+                errorMessage.classList.remove('hidden');
+                outputSection.classList.add('hidden');
+                recipeOutput.innerHTML = '';
+            } finally {
+                generateButton.disabled = false;
+                buttonText.textContent = 'Suggest Recipes';
+                loadingSpinner.classList.add('hidden');
+            }
+        }
+
+        // Event Listener for the button
+        generateButton.addEventListener('click', generateRecipe);
+
+        // Optional: Trigger on Enter key press in the textarea
+        ingredientsInput.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault(); // Prevents a newline
+                generateRecipe();
+            }
+        });
+    </script>
+</body>
+</html>
