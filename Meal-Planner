@@ -76,7 +76,7 @@
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
         // IMPORTANT: The API key must be inserted here for the app to work publicly.
         // It is currently empty. Replace the "" with your actual API key.
-        const apiKey = ""; 
+        const apiKey = "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"; 
 
         // DOM Elements
         const ingredientsInput = document.getElementById('ingredientsInput');
